@@ -1,0 +1,138 @@
+---
+title: "HW4_Paces_Will"
+author: "Will Paces"
+date: "March 9, 2022"
+output: html_document
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## STAA 566 Will Paces Homework 4 - Tables
+
+I wanted to visualize the change in state populations between 2010 and 2019, and provide plots detailing the change in median income over this time period in an attempt to provide an economic explanation for the migration of people. This data was downloaded from the US census bureau from both the Decennial and American Community Survey data repositiories. I decided to visualize this data in a table with spark charts detailing the trend in both population and median income growth metrics in order to allow users to make visual comparisons between these trends, as well as see overall changes during this timeframe. 
+
+```{r, warning=FALSE,message=FALSE}
+# Load libraries
+library(tidycensus)
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+library(rlang)
+library(purrr)
+library(sparkline)
+sparkline(0)
+library(reshape2)
+library(kableExtra)
+library(knitr)
+```
+
+```{r}
+# Get 2010 population data, save state name, fips and population columns
+statepop.2010 <- get_decennial(geography = 'state', variables = 'P001001', year = 2010)
+statepop.2010 <- statepop.2010 %>% select(NAME, fips = GEOID, pop2010 = value)
+statepop.2010$fips <- as.integer(statepop.2010$fips)
+
+# Get 2019 (2020 is unavailable?) population data, save fips and pop
+statepop.2019 <- get_acs(geography = 'state', variables = 'B01001_001', year = 2019)
+statepop.2019 <- statepop.2019 %>% select(fips = GEOID, pop2019 = estimate)
+statepop.2019$fips <- as.integer(statepop.2019$fips)
+
+# Merge datasets by fips, calculate population change
+statepop.diff <- merge(statepop.2010, statepop.2019, by = 'fips')
+statepop.diff$popChange <- statepop.diff$pop2019 - statepop.diff$pop2010
+statepop.diff <- statepop.diff %>% select(NAME, popChange)
+names(statepop.diff) <- c('state', 'popChange')
+
+# Download median income data per state between 2010 and 2019 ----
+years <- c(2010:2019)
+state.income <- map_dfr(years, 
+                        ~get_acs(geography = 'state', variables = 'B19013_001', 
+                                 year = .x, geometry = F),
+                        .id = 'year.id') %>%
+  select(year.id, NAME, median.income = estimate) %>% # remove unnecessary variables
+  mutate(year = as.integer(year.id) + 2009) %>%
+  select(-year.id)
+
+state.income <- state.income[order(state.income$NAME), ]
+
+# Compare beginning and final median state income during time period
+state.income.delta <- data.frame(matrix(NA, nrow = 0, ncol = 2))
+names(state.income.delta) <- c('state', 'income.change')
+
+for(i in unique(state.income$NAME)){
+  sub.data.start <- state.income[state.income$NAME == i & state.income$year == 2010, ]
+  sub.data.end <- state.income[state.income$NAME == i & state.income$year == 2019, ]
+  state.add <- data.frame("state" = i, "income.change" = sub.data.end$median.income - sub.data.start$median.income)
+  state.income.delta <- rbind(state.income.delta, state.add)
+}
+
+# Load total population estimate for 2010 to 2019 plot ----
+# Data was downloaded as a spreadsheet from https://www.census.gov/data/tables/time-series/demo/popest/2010s-state-total.html 
+state.pop.plot.data <- read.csv('C:\\Users\\Will\\Desktop\\STAA 566\\AssignmentGitRepos\\HW4_Paces_Will\\USgovCensusStatePopulationTS.csv')
+names(state.pop.plot.data) <- c('state', '2010', '2011', '2012', '2013', '2014', '2015', '2016', '2017', '2018', '2019')
+
+# convert to long data
+state.pop.plot.data <- melt(state.pop.plot.data, id.vars =  'state', variable.name = 'year', value.name = 'population')
+
+# Remove "."s from state name variable
+state.pop.plot.data$state <- gsub("\\.", "", state.pop.plot.data$state)
+
+# order by state names and declare names as factor
+state.pop.plot.data <- state.pop.plot.data[order(state.pop.plot.data$state), ]
+
+
+# Ensure that statepop.diff and state.income dataframes have states organized in the same (alphabetical) order
+statepop.diff <- statepop.diff[order(statepop.diff$state), ]
+
+# Merge datasets
+state.data <- merge(statepop.diff, state.income.delta, by = 'state')
+
+# Establish variable for income change charts
+state.data <- state.data %>%
+  mutate(plt.income = NA, plt.pop = NA)
+
+# Add chart data to table
+for(st in state.data$state){
+  
+  # add charts for population growth
+  state.pop <- state.pop.plot.data %>%
+    filter(state == st) %>%
+    arrange(year) %>%
+    pull(population)
+  
+  state.data[state.data$state == st, "plt.pop"] <- spk_chr(state.pop, type = 'line',
+                                                           chartRangeMin = min(state.pop),
+                                                           chartRangeMax = max(state.pop))
+  
+  # add charts for income growth
+  state.inc <- state.income %>%
+    filter(NAME == st) %>%
+    arrange(year) %>%
+    pull(median.income)
+  
+  state.data[state.data$state == st, "plt.income"] <- spk_chr(state.inc, type = 'line',
+                                                              chartRangeMin = min(state.inc),
+                                                              chartRangeMax = max(state.inc))
+}
+
+# Organize data for table creation
+state.data.table <- state.data %>%
+  select(state, popChange, plt.pop, income.change, plt.income) %>%
+  kbl(escape = F,
+      col.names = c("State", "Population Change", "Population Trend",
+                    "Median Income Change", 'Median Income Trend'),
+      align = c('l','c', 'c', 'c', 'c')) %>%
+  kable_styling(bootstrap_options = 'hover', fixed_thead = T) %>%
+  add_header_above(c(" ", "2010 to 2019 Time Frame" = 4))
+  
+state.data.table
+
+
+```
